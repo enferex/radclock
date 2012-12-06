@@ -444,6 +444,59 @@ destroy_peer_stamp_queue(struct bidir_peer *peer)
 }
 
 
+
+/*
+ * Swap two stamp queue elements in the same queue if rank ordering has been
+ * broken. Called recursively until order restored.  This assumes that only one
+ * element is at a wrong position.
+ */
+void
+fix_queue_order(struct stamp_queue *q, struct stq_elt *stq)
+{
+	struct stq_elt *tmp;
+
+	if (stq->next != NULL) {
+		tmp = stq->next;
+		/* Swap elements if stq->next is younger than stq. */
+		if (stq->stamp.rank < tmp->stamp.rank) {
+			if (stq->prev != NULL)
+				stq->prev->next = tmp;
+			if (tmp->next != NULL)
+				tmp->next->prev = stq;
+			tmp->prev = stq->prev;
+			stq->next = tmp->next;
+			tmp->next = stq;
+			stq->prev = tmp;
+			if (q->start == stq)
+				q->start = tmp;
+			if (q->end == tmp)
+				q->end = stq;
+			return (fix_queue_order(q, stq));
+		}
+	}
+
+	if (stq->prev != NULL) {
+		tmp = stq->prev;
+		/* Swap elements if stq->prev is older than stq. */
+		if (stq->stamp.rank > tmp->stamp.rank) {
+			if (stq->next != NULL)
+				stq->next->prev = tmp;
+			if (tmp->prev != NULL)
+				tmp->prev->next = stq;
+			tmp->next = stq->next;
+			stq->prev = tmp->prev;
+			stq->next = tmp;
+			tmp->prev = stq;
+			if (q->start == tmp)
+				q->start = stq;
+			if (q->end == stq)
+				q->end = tmp;
+			return (fix_queue_order(q, stq));
+		}
+	}
+}
+
+
 /*
  * Insert a client or server NTP packet into the stamp queue. This routine
  * effectively pairs matching requests and replies. The stamp queue has been
@@ -451,14 +504,18 @@ destroy_peer_stamp_queue(struct bidir_peer *peer)
  * If no matching stamp is found, the new packet is inserted with partial
  * information. If a matching partial stamp exists, missing information is added
  * to the stamp.
+ *
+ * Quick algo ideas:
+ * - use the full walk to find half-baked stamp.
+ * - if was half-baked stamp, update rank and re-order queue if needed
+ *   (note that rank defined as receiving stamp, outgoing packets in two-way
+ *   requests will see their rank change).
  */
 int
 insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 {
-	struct stq_elt *stq;
-	struct stq_elt *tmp;
+	struct stq_elt *stq, *insert, *halfstamp;
 	struct stamp_t *stamp;
-	int found;
 
 	JDEBUG
 
@@ -467,16 +524,18 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 		return (-1);
 	}
 
-	/* Locate a place in the queue to place the new stamp.
-	 * The queue is ordered from lesser id to greater.
+	/*
+	 * Parse the queue to either find a half-baked stamp. If no matching stamp
+	 * is found, mark a position to insert the new stamp to the left of. From
+	 * start to end, the queue is ordered from young (higher ID) to old (lower
+	 * ID). IDs increment as time passes.  Locate a place in the queue to place
+	 * the new stamp.
 	 */
-	found = 0;
+	halfstamp = NULL;
+	insert = NULL;
 	stq = q->start;
-	tmp = q->start;
 	while (stq != NULL) {
 		stamp = &stq->stamp;
-		if (stamp->id > new->id)
-			tmp = stq;
 		if ((stamp->type == STAMP_NTP) && (stamp->id == new->id)) {
 			if (mode == MODE_CLIENT) {
 				if (BST(stamp)->Ta != 0) {
@@ -489,61 +548,82 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 					return (-1);
 				}
 			}
-			/* Found half-baked stamp to finish filling */
-			found = 1;
+		}
+
+		/* Found half-baked stamp to finish filling */
+		if (stamp->id == new->id) {
+			halfstamp = stq;
 			break;
+		}
+		/* Mark the first encounter with a stamp older than new. */
+		if (insert == NULL && (new->rank > stamp->rank)) {
+			insert = stq;
 		}
 		stq = stq->next;
 	}
 
 	/*
 	 * Haven't found an existing server stamp, which is quite normal. Create a
-	 * new half-baked stamp and insert it in the peer queue structure.
-	 * If the queue is getting bloated, delete the oldest stamp.
+	 * new stamp and insert it in the peer queue structure.
 	 */
-	if (!found) {
+	if (halfstamp == NULL) {
 		if (q->size == MAX_STQ_SIZE) {
-			verbose(LOG_WARNING, "Peer stamp queue has hit max size. Check the server?");
-			if (tmp == q->end)
-				tmp = NULL;
+			verbose(LOG_WARNING, "Peer stamp queue has hit max size. "
+					"Check the server?");
+			if (insert == q->end)
+				insert = NULL;
 			q->end = q->end->prev;
 			free(q->end->next);
 			q->end->next = NULL;
 			q->size--;
-		}	
+		}
 
-		/* Now we insert based on if we have 'tmp' which should be the point
-		 * where we insert before.
+		/*
+		 * Create new stamp queue element and insert in the queue.  Packets may
+		 * have been received out of order (low probability) and bidir-stamp
+		 * replies change the rank of half-baked stamp.  Both cases handled by
+		 * reordering the queue once data is updated, but we can save time if we
+		 * put the packet at about the right place.
 		 */
 		stq = (struct stq_elt *) calloc(1, sizeof(struct stq_elt));
 		stq->prev = NULL;
 		stq->next = NULL;
-		if (tmp != NULL) {
-			stq->next = tmp;
-			stq->prev = tmp->prev;
-			if (tmp->prev)	{
-				tmp->prev->next	= stq;
-				tmp->prev =	stq;
+		/* Common case, new stamp is inserted to the left of insert. */
+		if (insert != NULL) {
+			if (q->start == insert)
+				q->start = stq;
+			stq->next = insert;
+			stq->prev = insert->prev;
+			if (insert->prev) {
+				insert->prev->next = stq;
+				insert->prev = stq;
 			}
-		} else if (tmp == NULL && q->size > 0) { /* Else: insert as end */
-			stq->prev = q->end;
-			q->end->next = stq;
-			q->end = stq;
 		}
-		if (q->start == tmp && q->size > 0) { /* Insert as start */
-			q->start = stq;
-			tmp->prev =	stq;
-		}
-		if (q->size == 0) {
-			q->start = stq;
-			q->end = stq;
+		/*
+		 * No insert mark, because it was either not found, or the queue hit max
+		 * size or the queue is empty. In all cases, new has to be inserted at
+		 * the end.
+		 */
+		else {
+			if (q->size == 0) {
+				q->start = stq;
+				q->end = stq;
+			}
+			else {
+				stq->prev = q->end;
+				q->end->next = stq;
+				q->end = stq;
+			}
 		}
 		q->size++;
 	}
+	else
+		stq = halfstamp;
 
 	/* Selectively copy content of new stamp over */
 	stamp = &stq->stamp;
 	stamp->type = STAMP_NTP;
+	stamp->rank = new->rank;
 	if (mode == MODE_CLIENT) {
 		stamp->id = new->id;
 		BST(stamp)->Ta = BST(new)->Ta;
@@ -561,6 +641,10 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 		BST(stamp)->Tf = BST(new)->Tf;
 	}
 
+	/* Rank of half baked-stamp may have changed, fix queue order */
+	fix_queue_order(q, stq);
+
+	/* Verbose queue print out */
 	stq = q->start;
 	while (stq != NULL) {
 		stamp = &stq->stamp;
@@ -570,7 +654,7 @@ insert_stamp_queue(struct stamp_queue *q, struct stamp_t *new, int mode)
 		stq = stq->next;
 	}
 
-	if (found)
+	if (halfstamp)
 		return (0);
 	else
 		return (1);
@@ -695,6 +779,7 @@ push_stamp_client(struct stamp_queue *q, struct ntp_pkt *ntp, vcounter_t *vcount
 
 	stamp.id = ((uint64_t) ntohl(ntp->xmt.l_int)) << 32;
 	stamp.id |= (uint64_t) ntohl(ntp->xmt.l_fra);
+	stamp.rank = (uint64_t)*vcount;
 	stamp.type = STAMP_NTP;
 	BST(&stamp)->Ta = *vcount;
 
@@ -720,6 +805,7 @@ push_stamp_server(struct stamp_queue *q, struct ntp_pkt *ntp,
 	stamp.type = STAMP_NTP;
 	stamp.id = ((uint64_t) ntohl(ntp->org.l_int)) << 32;
 	stamp.id |= (uint64_t) ntohl(ntp->org.l_fra);
+	stamp.rank = (uint64_t)*vcount;
 
 	// TODO not protocol independent. Getaddrinfo instead?
 	if (ss_src->ss_family == AF_INET)
@@ -829,8 +915,7 @@ update_stamp_queue(struct stamp_queue *q, radpcap_packet_t *packet,
 int
 get_stamp_from_queue(struct stamp_queue *q, struct stamp_t *stamp)
 {
-	struct stq_elt *endq;
-	struct stq_elt *stq;
+	struct stq_elt *stq, *stq2;
 	struct stamp_t *st;
 	int qsize;
 
@@ -842,36 +927,42 @@ get_stamp_from_queue(struct stamp_queue *q, struct stamp_t *stamp)
 		return (1);
 	}
 
+	/* Start from the oldest stamps, at the end, with lowest id. */
+	stq2 = NULL;
 	stq = q->end;
 	while (stq != NULL) {
 		st = &stq->stamp;
 		if ((BST(st)->Ta != 0) && (BST(st)->Tf != 0)) {
 			memcpy(stamp, st, sizeof(struct stamp_t));
+			stq2 = stq;
 			break;
 		}
 		stq = stq->prev;
 	}
 
-	if (stq == NULL) {
+	/* stq2 cannot be null if we do not return here. */
+	if (stq2 == NULL) {
 		verbose(VERB_DEBUG, "Did not find any full stamp in stamp queue");
 		return (1);
 	}
 
+	/* Record queue size for later stats. */
 	qsize = q->size;
-	endq = q->end;
-	while ((endq != q->start) && (endq != stq)) {
-		endq = endq->prev;
-		free(endq->next);
-		q->size--;
-	}
 
-	q->size--;
-	if (q->size == 0) {
-		q->start = NULL;
-		q->end = NULL;
-	} else {
-		q->end = stq->prev;
+	/* Clean the queue, fix the start and end queue pointer first. */
+	q->end = stq2->prev;
+	if (q->end != NULL)
 		q->end->next = NULL;
+	if (q->start == stq2)
+		q->start = NULL;
+
+	/* Remove the stamp we copied and all old unmatched stamps */
+	stq = stq2;
+	while (stq != NULL) {
+		stq = stq->next;
+		free(stq2);
+		q->size--;
+		stq2 = stq;
 	}
 
 	verbose(VERB_DEBUG, "Stamp queue had %d stamps, freed %d, %d left",

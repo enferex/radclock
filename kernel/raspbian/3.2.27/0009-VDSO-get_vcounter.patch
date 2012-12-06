@@ -17,18 +17,18 @@ index 815285b..7524e5c1a 100644
 --- a/arch/x86/include/asm/vgtod.h
 +++ b/arch/x86/include/asm/vgtod.h
 @@ -16,10 +16,14 @@ struct vsyscall_gtod_data {
- 		int vclock_mode;
- 		cycle_t	cycle_last;
- 		cycle_t	mask;
- 		u32	mult;
- 		u32	shift;
+		int vclock_mode;
+		cycle_t	cycle_last;
+		cycle_t	mask;
+		u32	mult;
+		u32	shift;
 +#ifdef CONFIG_RADCLOCK
 +		vcounter_t vcounter_record;
 +		vcounter_t vcounter_source_record;
 +#endif
- 	} clock;
- 	struct timespec wall_to_monotonic;
- 	struct timespec wall_time_coarse;
+	} clock;
+	struct timespec wall_to_monotonic;
+	struct timespec wall_time_coarse;
  };
  extern struct vsyscall_gtod_data vsyscall_gtod_data;
 diff --git a/arch/x86/kernel/vsyscall_64.c b/arch/x86/kernel/vsyscall_64.c
@@ -36,30 +36,30 @@ index e4d4a22..42962c8 100644
 --- a/arch/x86/kernel/vsyscall_64.c
 +++ b/arch/x86/kernel/vsyscall_64.c
 @@ -103,10 +103,14 @@ void update_vsyscall(struct timespec *wall_time, struct timespec *wtm,
- 	vsyscall_gtod_data.clock.shift		= clock->shift;
- 	vsyscall_gtod_data.wall_time_sec	= wall_time->tv_sec;
- 	vsyscall_gtod_data.wall_time_nsec	= wall_time->tv_nsec;
- 	vsyscall_gtod_data.wall_to_monotonic	= *wtm;
- 	vsyscall_gtod_data.wall_time_coarse	= __current_kernel_time();
+	vsyscall_gtod_data.clock.shift		= clock->shift;
+	vsyscall_gtod_data.wall_time_sec	= wall_time->tv_sec;
+	vsyscall_gtod_data.wall_time_nsec	= wall_time->tv_nsec;
+	vsyscall_gtod_data.wall_to_monotonic	= *wtm;
+	vsyscall_gtod_data.wall_time_coarse	= __current_kernel_time();
 +#ifdef CONFIG_RADCLOCK
 +	vsyscall_gtod_data.clock.vcounter_record = clock->vcounter_record;
 +	vsyscall_gtod_data.clock.vcounter_source_record = clock->vcounter_source_record;
 +#endif
- 
- 	write_sequnlock_irqrestore(&vsyscall_gtod_data.lock, flags);
+
+	write_sequnlock_irqrestore(&vsyscall_gtod_data.lock, flags);
  }
- 
+
  static void warn_bad_vsyscall(const char *level, struct pt_regs *regs,
 diff --git a/arch/x86/vdso/vclock_gettime.c b/arch/x86/vdso/vclock_gettime.c
 index 6bc0e72..85241c3 100644
 --- a/arch/x86/vdso/vclock_gettime.c
 +++ b/arch/x86/vdso/vclock_gettime.c
 @@ -214,5 +214,100 @@ notrace time_t __vdso_time(time_t *t)
- 		*t = result;
- 	return result;
+		*t = result;
+	return result;
  }
  int time(time_t *t)
- 	__attribute__((weak, alias("__vdso_time")));
+	__attribute__((weak, alias("__vdso_time")));
 +
 +#ifdef CONFIG_RADCLOCK
 +/* Copy of the version in kernel/time/timekeeping.c which we cannot directly access */
@@ -155,6 +155,5 @@ index 6bc0e72..85241c3 100644
 +	__attribute__((weak, alias("__vdso_get_vcounter_latency")));
 +
 +#endif  /* CONFIG_RADCLOCK */
--- 
+--
 1.7.5.4
-

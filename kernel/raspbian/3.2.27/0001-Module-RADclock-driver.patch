@@ -32,11 +32,11 @@ index b5e6f24..df78af1 100644
 --- a/drivers/Kconfig
 +++ b/drivers/Kconfig
 @@ -134,6 +134,7 @@ source "drivers/virt/Kconfig"
- 
+
  source "drivers/hv/Kconfig"
- 
+
  source "drivers/devfreq/Kconfig"
- 
+
 +source "drivers/radclock/Kconfig"
  endmenu
 diff --git a/drivers/Makefile b/drivers/Makefile
@@ -47,7 +47,7 @@ index 1b31421..c8e9333 100644
  # Virtualization drivers
  obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
  obj-$(CONFIG_HYPERV)		+= hv/
- 
+
  obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
 +obj-$(CONFIG_RADCLOCK)		+= radclock/
 diff --git a/drivers/radclock/Kconfig b/drivers/radclock/Kconfig
@@ -532,7 +532,7 @@ index 081147d..b075e29 100644
  #include <linux/init.h>
  #include <asm/div64.h>
  #include <asm/io.h>
- 
+
 +#ifdef CONFIG_RADCLOCK
 +typedef u64 vcounter_t;
 +#endif
@@ -540,7 +540,7 @@ index 081147d..b075e29 100644
  /* clocksource cycle base type */
  typedef u64 cycle_t;
  struct clocksource;
- 
+
  #ifdef CONFIG_ARCH_CLOCKSOURCE_DATA
 diff --git a/include/linux/radclock.h b/include/linux/radclock.h
 new file mode 100644
@@ -620,6 +620,5 @@ index 0000000..0efc4ea
 +void radclock_fill_ktime(vcounter_t vcounter, ktime_t *ktime);
 +
 +#endif
--- 
+--
 1.7.5.4
-

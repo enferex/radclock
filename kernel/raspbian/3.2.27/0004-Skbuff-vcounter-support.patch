@@ -18,7 +18,7 @@ index fe86488..c2f7889 100644
  #include <linux/dmaengine.h>
  #include <linux/hrtimer.h>
  #include <linux/dma-mapping.h>
- 
+
 +#ifdef CONFIG_RADCLOCK
 +#include <linux/clocksource.h>
 +#endif
@@ -29,55 +29,54 @@ index fe86488..c2f7889 100644
  #define CHECKSUM_COMPLETE 2
  #define CHECKSUM_PARTIAL 3
 @@ -374,10 +378,15 @@ struct sk_buff {
- 	struct sk_buff		*next;
- 	struct sk_buff		*prev;
- 
- 	ktime_t			tstamp;
- 
+	struct sk_buff		*next;
+	struct sk_buff		*prev;
+
+	ktime_t			tstamp;
+
 +#ifdef CONFIG_RADCLOCK
 +	vcounter_t		vcount_stamp;
 +	ktime_t 		tstamp_fair; /* Specific to the FAIR_COMPARE mode, ns resolution */
 +#endif
 +
- 	struct sock		*sk;
- 	struct net_device	*dev;
- 
- 	/*
- 	 * This is the control buffer. It is free to use for every
+	struct sock		*sk;
+	struct net_device	*dev;
+
+	/*
+	 * This is the control buffer. It is free to use for every
 diff --git a/net/core/skbuff.c b/net/core/skbuff.c
 index 3c30ee4..a1dece1 100644
 --- a/net/core/skbuff.c
 +++ b/net/core/skbuff.c
 @@ -211,10 +211,14 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
- 	skb->truesize = SKB_TRUESIZE(size);
- 	atomic_set(&skb->users, 1);
- 	skb->head = data;
- 	skb->data = data;
- 	skb_reset_tail_pointer(skb);
+	skb->truesize = SKB_TRUESIZE(size);
+	atomic_set(&skb->users, 1);
+	skb->head = data;
+	skb->data = data;
+	skb_reset_tail_pointer(skb);
 +#ifdef CONFIG_RADCLOCK
 +	skb->vcount_stamp = 0;
 +	skb->tstamp_fair = ktime_set(-1L, -1L);
 +#endif
- 	skb->end = skb->tail + size;
+	skb->end = skb->tail + size;
  #ifdef NET_SKBUFF_DATA_USES_OFFSET
- 	skb->mac_header = ~0U;
+	skb->mac_header = ~0U;
  #endif
- 
+
 @@ -533,10 +537,14 @@ bool skb_recycle_check(struct sk_buff *skb, int skb_size)
  EXPORT_SYMBOL(skb_recycle_check);
- 
+
  static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
  {
- 	new->tstamp		= old->tstamp;
+	new->tstamp		= old->tstamp;
 +	#ifdef CONFIG_RADCLOCK
 +	new->vcount_stamp 	= old->vcount_stamp;
 +	new->tstamp_fair 	= old->tstamp_fair;
 +	#endif
- 	new->dev		= old->dev;
- 	new->transport_header	= old->transport_header;
- 	new->network_header	= old->network_header;
- 	new->mac_header		= old->mac_header;
- 	skb_dst_copy(new, old);
--- 
+	new->dev		= old->dev;
+	new->transport_header	= old->transport_header;
+	new->network_header	= old->network_header;
+	new->mac_header		= old->mac_header;
+	skb_dst_copy(new, old);
+--
 1.7.5.4
-

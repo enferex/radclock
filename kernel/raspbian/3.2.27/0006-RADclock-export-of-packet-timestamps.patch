@@ -22,7 +22,7 @@ index d9d4970..af9a78a 100644
  #include <linux/virtio_net.h>
  #include <linux/errqueue.h>
  #include <linux/net_tstamp.h>
- 
+
 +#ifdef CONFIG_RADCLOCK
 +#include <linux/radclock.h>
 +#endif
@@ -30,29 +30,29 @@ index d9d4970..af9a78a 100644
  #ifdef CONFIG_INET
  #include <net/inet_common.h>
  #endif
- 
+
  /*
 @@ -1716,10 +1720,14 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
- 	unsigned short macoff, netoff, hdrlen;
- 	struct sk_buff *copy_skb = NULL;
- 	struct timeval tv;
- 	struct timespec ts;
- 	struct skb_shared_hwtstamps *shhwtstamps = skb_hwtstamps(skb);
+	unsigned short macoff, netoff, hdrlen;
+	struct sk_buff *copy_skb = NULL;
+	struct timeval tv;
+	struct timespec ts;
+	struct skb_shared_hwtstamps *shhwtstamps = skb_hwtstamps(skb);
 +#ifdef CONFIG_RADCLOCK
 +	unsigned short vcountoff;
 +	ktime_t rad_ktime;
 +#endif
- 
- 	if (skb->pkt_type == PACKET_LOOPBACK)
- 		goto drop;
- 
- 	sk = pt->af_packet_priv;
+
+	if (skb->pkt_type == PACKET_LOOPBACK)
+		goto drop;
+
+	sk = pt->af_packet_priv;
 @@ -1747,17 +1755,35 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
- 		goto drop_n_restore;
- 	if (snaplen > res)
- 		snaplen = res;
- 
- 	if (sk->sk_type == SOCK_DGRAM) {
+		goto drop_n_restore;
+	if (snaplen > res)
+		snaplen = res;
+
+	if (sk->sk_type == SOCK_DGRAM) {
 +#ifdef CONFIG_RADCLOCK
 +/* We would prefer to push the timestamp in the tpacket header instead of
 + * hiding it into the gap between the sockaddr_ll and the mac/net header.
@@ -64,31 +64,31 @@ index d9d4970..af9a78a 100644
 +		macoff = netoff = TPACKET_ALIGN(po->tp_hdrlen + 16 + sizeof(vcounter_t)) +
 +				po->tp_reserve;
 +#else
- 		macoff = netoff = TPACKET_ALIGN(po->tp_hdrlen) + 16 +
- 				  po->tp_reserve;
+		macoff = netoff = TPACKET_ALIGN(po->tp_hdrlen) + 16 +
+				  po->tp_reserve;
 +#endif
- 	} else {
- 		unsigned maclen = skb_network_offset(skb);
+	} else {
+		unsigned maclen = skb_network_offset(skb);
 +#ifdef CONFIG_RADCLOCK
 +		netoff = TPACKET_ALIGN(po->tp_hdrlen +
 +				       (maclen < 16 ? 16 : maclen) + sizeof(vcounter_t)) +
 +			po->tp_reserve;
 +#else
- 		netoff = TPACKET_ALIGN(po->tp_hdrlen +
- 				       (maclen < 16 ? 16 : maclen)) +
- 			po->tp_reserve;
+		netoff = TPACKET_ALIGN(po->tp_hdrlen +
+				       (maclen < 16 ? 16 : maclen)) +
+			po->tp_reserve;
 +#endif
- 		macoff = netoff - maclen;
- 	}
- 	if (po->tp_version <= TPACKET_V2) {
- 		if (macoff + snaplen > po->rx_ring.frame_size) {
- 			if (po->copy_thresh &&
+		macoff = netoff - maclen;
+	}
+	if (po->tp_version <= TPACKET_V2) {
+		if (macoff + snaplen > po->rx_ring.frame_size) {
+			if (po->copy_thresh &&
 @@ -1799,10 +1825,27 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
- 	}
- 	spin_unlock(&sk->sk_receive_queue.lock);
- 
- 	skb_copy_bits(skb, 0, h.raw + macoff, snaplen);
- 
+	}
+	spin_unlock(&sk->sk_receive_queue.lock);
+
+	skb_copy_bits(skb, 0, h.raw + macoff, snaplen);
+
 +#ifdef CONFIG_RADCLOCK
 +	/* Provide a timeval stamp build based on the RADclock or a timestamp for
 +	 * fair comparison. Replace existing timestamp in the skbuff if in the right
@@ -106,17 +106,17 @@ index d9d4970..af9a78a 100644
 +	}
 +#endif
 +
- 	switch (po->tp_version) {
- 	case TPACKET_V1:
- 		h.h1->tp_len = skb->len;
- 		h.h1->tp_snaplen = snaplen;
- 		h.h1->tp_mac = macoff;
+	switch (po->tp_version) {
+	case TPACKET_V1:
+		h.h1->tp_len = skb->len;
+		h.h1->tp_snaplen = snaplen;
+		h.h1->tp_mac = macoff;
 @@ -1882,10 +1925,43 @@ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev,
- 	sll->sll_pkttype = skb->pkt_type;
- 	if (unlikely(po->origdev))
- 		sll->sll_ifindex = orig_dev->ifindex;
- 	else
- 		sll->sll_ifindex = dev->ifindex;
+	sll->sll_pkttype = skb->pkt_type;
+	if (unlikely(po->origdev))
+		sll->sll_ifindex = orig_dev->ifindex;
+	else
+		sll->sll_ifindex = dev->ifindex;
 +#ifdef CONFIG_RADCLOCK
 +	/* Insert vcount timestamp in here. It has to be inserted in front of the
 +	 * pointer libpcap passes to the user callback. Because libpcap does write
@@ -142,7 +142,7 @@ index d9d4970..af9a78a 100644
 +		vcountoff -= 4 /*VLAN_TAG_LEN*/;
 +	}
 +
-+	if (po->tp_version == TPACKET_V3) 
++	if (po->tp_version == TPACKET_V3)
 +		printk("FIXME: need to implement TPACKET_V3 (%s:%d)\n", __FILE__, __LINE__);
 +
 +	/* Copy the vcount stamp just before where the mac/sll header wil be */
@@ -150,17 +150,17 @@ index d9d4970..af9a78a 100644
 +	memcpy(h.raw + vcountoff, &(skb->vcount_stamp), sizeof(vcounter_t));
 +#endif
 +
- 
- 	smp_mb();
+
+	smp_mb();
  #if ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE == 1
- 	{
- 		u8 *start, *end;
+	{
+		u8 *start, *end;
 @@ -2774,10 +2850,19 @@ static int packet_recvmsg(struct kiocb *iocb, struct socket *sock,
- 
- 	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
- 	if (err)
- 		goto out_free;
- 
+
+	err = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	if (err)
+		goto out_free;
+
 +#ifdef CONFIG_RADCLOCK
 +	/* Pass the two extra raw timestamps specific to the RADCLOCK to the socket:
 +	 * the raw vcounter and the timeval stamps used in the
@@ -170,17 +170,17 @@ index d9d4970..af9a78a 100644
 +	sk->sk_stamp_fair 	= skb->tstamp_fair;
 +#endif
 +
- 	sock_recv_ts_and_drops(msg, sk, skb);
- 
- 	if (msg->msg_name)
- 		memcpy(msg->msg_name, &PACKET_SKB_CB(skb)->sa,
- 		       msg->msg_namelen);
+	sock_recv_ts_and_drops(msg, sk, skb);
+
+	if (msg->msg_name)
+		memcpy(msg->msg_name, &PACKET_SKB_CB(skb)->sa,
+		       msg->msg_namelen);
 @@ -3395,14 +3480,71 @@ static int packet_ioctl(struct socket *sock, unsigned int cmd,
- 			amount = skb->len;
- 		spin_unlock_bh(&sk->sk_receive_queue.lock);
- 		return put_user(amount, (int __user *)arg);
- 	}
- 	case SIOCGSTAMP:
+			amount = skb->len;
+		spin_unlock_bh(&sk->sk_receive_queue.lock);
+		return put_user(amount, (int __user *)arg);
+	}
+	case SIOCGSTAMP:
 +#ifdef CONFIG_RADCLOCK
 +			if (sk->sk_radclock_tsmode == RADCLOCK_TSMODE_RADCLOCK)
 +			{
@@ -196,8 +196,8 @@ index d9d4970..af9a78a 100644
 +				sk->sk_stamp = sk->sk_stamp_fair;
 +			}
 +#endif
- 		return sock_get_timestamp(sk, (struct timeval __user *)arg);
- 	case SIOCGSTAMPNS:
+		return sock_get_timestamp(sk, (struct timeval __user *)arg);
+	case SIOCGSTAMPNS:
 +#ifdef CONFIG_RADCLOCK
 +			if (sk->sk_radclock_tsmode == RADCLOCK_TSMODE_RADCLOCK)
 +			{
@@ -213,8 +213,8 @@ index d9d4970..af9a78a 100644
 +				sk->sk_stamp = sk->sk_stamp_fair;
 +			}
 +#endif
- 		return sock_get_timestampns(sk, (struct timespec __user *)arg);
- 
+		return sock_get_timestampns(sk, (struct timespec __user *)arg);
+
 +#ifdef CONFIG_RADCLOCK
 +		case SIOCSRADCLOCKTSMODE:
 +		{
@@ -243,10 +243,9 @@ index d9d4970..af9a78a 100644
 +#endif
 +
  #ifdef CONFIG_INET
- 	case SIOCADDRT:
- 	case SIOCDELRT:
- 	case SIOCDARP:
- 	case SIOCGARP:
--- 
+	case SIOCADDRT:
+	case SIOCDELRT:
+	case SIOCDARP:
+	case SIOCGARP:
+--
 1.7.5.4
-

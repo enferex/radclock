@@ -27,12 +27,12 @@ index 599c77d..e220a79 100644
 +#define __NR_get_vcounter	349
 +#define __NR_get_vcounter_latency	350
 +#endif
- 
+
  #ifdef __KERNEL__
- 
+
 -#define NR_syscalls 349
 +#define NR_syscalls 351
- 
+
  #define __ARCH_WANT_IPC_PARSE_VERSION
  #define __ARCH_WANT_OLD_READDIR
  #define __ARCH_WANT_OLD_STAT
@@ -53,7 +53,7 @@ index 0431f19..4658143 100644
 +#define __NR_get_vcounter_latency	313
 +__SYSCALL(__NR_get_vcounter_latency, sys_get_vcounter_latency)
 +#endif
- 
+
  #ifndef __NO_STUBS
  #define __ARCH_WANT_OLD_READDIR
  #define __ARCH_WANT_OLD_STAT
@@ -63,11 +63,11 @@ index 9a0e312..1c83bc6 100644
 --- a/arch/x86/kernel/syscall_table_32.S
 +++ b/arch/x86/kernel/syscall_table_32.S
 @@ -346,5 +346,9 @@ ENTRY(sys_call_table)
- 	.long sys_syncfs
- 	.long sys_sendmmsg		/* 345 */
- 	.long sys_setns
- 	.long sys_process_vm_readv
- 	.long sys_process_vm_writev
+	.long sys_syncfs
+	.long sys_sendmmsg		/* 345 */
+	.long sys_setns
+	.long sys_process_vm_readv
+	.long sys_process_vm_writev
 +#ifdef CONFIG_RADCLOCK
 +	.long sys_get_vcounter
 +	.long sys_get_vcounter_latency
@@ -85,17 +85,17 @@ index 86a24b1..f2b5f1d 100644
 +#ifdef CONFIG_RADCLOCK
 +#include <linux/clocksource.h>
 +#endif
- 
+
  #define __SC_DECL1(t1, a1)	t1 a1
  #define __SC_DECL2(t2, a2, ...) t2 a2, __SC_DECL1(__VA_ARGS__)
  #define __SC_DECL3(t3, a3, ...) t3 a3, __SC_DECL2(__VA_ARGS__)
  #define __SC_DECL4(t4, a4, ...) t4 a4, __SC_DECL3(__VA_ARGS__)
 @@ -855,6 +858,11 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
- 				      unsigned long liovcnt,
- 				      const struct iovec __user *rvec,
- 				      unsigned long riovcnt,
- 				      unsigned long flags);
- 
+				      unsigned long liovcnt,
+				      const struct iovec __user *rvec,
+				      unsigned long riovcnt,
+				      unsigned long flags);
+
 +#ifdef CONFIG_RADCLOCK
 +asmlinkage long sys_get_vcounter(vcounter_t *vcounter);
 +asmlinkage long sys_get_vcounter_latency(vcounter_t *vcounter, cycle_t *vcount_lat, cycle_t *tsc_lat);
@@ -107,11 +107,11 @@ index 73e416d..c980a50 100644
 --- a/kernel/time.c
 +++ b/kernel/time.c
 @@ -112,10 +112,53 @@ SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
- 			return -EFAULT;
- 	}
- 	return 0;
+			return -EFAULT;
+	}
+	return 0;
  }
- 
+
 +
 +#ifdef CONFIG_RADCLOCK
 +asmlinkage long sys_get_vcounter(vcounter_t *vcounter)
@@ -160,6 +160,5 @@ index 73e416d..c980a50 100644
   * local time.
   *
   * This is ugly, but preferable to the alternatives.  Otherwise we
--- 
+--
 1.7.5.4
-

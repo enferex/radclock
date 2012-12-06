@@ -21,7 +21,7 @@ index 9a61a36..c5601d4 100644
  #define SIOCATMARK	0x8905
  #define SIOCGSTAMP	0x8906		/* Get stamp (timeval) */
  #define SIOCGSTAMPNS	0x8907		/* Get stamp (timespec) */
- 
+
 +#ifdef CONFIG_RADCLOCK
 +#define SIOCSRADCLOCKTSMODE	0x8908
 +#define SIOCGRADCLOCKTSMODE	0x8909
@@ -34,16 +34,16 @@ index 7997a50..5dae2d1 100644
 +++ b/include/linux/sockios.h
 @@ -125,10 +125,14 @@
  #define SIOCBRDELIF	0x89a3		/* remove interface from bridge */
- 
+
  /* hardware time stamping: parameters in linux/net_tstamp.h */
  #define SIOCSHWTSTAMP   0x89b0
- 
+
 +#ifdef CONFIG_RADCLOCK
 +#define SIOCGRADCLOCKSTAMP 0x89b1	/* get current vcounter timestamp */
 +#endif
 +
  /* Device private ioctl calls */
- 
+
  /*
   *	These 16 ioctls are available to devices via the do_ioctl() device
   *	vector. Each device should include this file and redefine these names
@@ -52,11 +52,11 @@ index 2877647..f71746b 100644
 --- a/net/socket.c
 +++ b/net/socket.c
 @@ -2611,10 +2611,28 @@ static int do_siocgstampns(struct net *net, struct socket *sock,
- 		err |= __put_user(kts.tv_nsec, &up->tv_nsec);
- 	}
- 	return err;
+		err |= __put_user(kts.tv_nsec, &up->tv_nsec);
+	}
+	return err;
  }
- 
+
 +
 +#ifdef CONFIG_RADCLOCK
 +static int do_siocgradclockstamp(struct net *net, struct socket *sock,
@@ -77,24 +77,23 @@ index 2877647..f71746b 100644
 +
  static int dev_ifname32(struct net *net, struct compat_ifreq __user *uifr32)
  {
- 	struct ifreq __user *uifr;
- 	int err;
- 
+	struct ifreq __user *uifr;
+	int err;
+
 @@ -3153,10 +3171,14 @@ static int compat_sock_ioctl_trans(struct file *file, struct socket *sock,
- 		return do_siocgstamp(net, sock, cmd, argp);
- 	case SIOCGSTAMPNS:
- 		return do_siocgstampns(net, sock, cmd, argp);
- 	case SIOCSHWTSTAMP:
- 		return compat_siocshwtstamp(net, argp);
+		return do_siocgstamp(net, sock, cmd, argp);
+	case SIOCGSTAMPNS:
+		return do_siocgstampns(net, sock, cmd, argp);
+	case SIOCSHWTSTAMP:
+		return compat_siocshwtstamp(net, argp);
 +#ifdef CONFIG_RADCLOCK
 +	case SIOCGRADCLOCKSTAMP:
 +		return do_siocgradclockstamp(net, sock, cmd, argp);
 +#endif
- 
- 	case FIOSETOWN:
- 	case SIOCSPGRP:
- 	case FIOGETOWN:
- 	case SIOCGPGRP:
--- 
-1.7.5.4
 
+	case FIOSETOWN:
+	case SIOCSPGRP:
+	case FIOGETOWN:
+	case SIOCGPGRP:
+--
+1.7.5.4
